@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Activity,
   CalendarDays,
   CarFront,
   CheckCircle2,
@@ -12,10 +13,11 @@ import {
   FileImage,
   Headphones,
   MessageCircle,
-  RefreshCw,
+  Paperclip,
   Search,
   Send,
   UserRound,
+  UserCheck,
   X,
 } from 'lucide-react';
 import { ContentLoadingSkeleton, LazyMount, SkeletonBone } from '@adhocx/ui/page-loading';
@@ -24,7 +26,7 @@ import { LazyDonutChart } from '../../components/charts/LazyCharts';
 import LazyScrollSentinel from '../../components/common/LazyScrollSentinel';
 import TableSkeletonRows from '../../components/common/TableSkeletonRows';
 import { supportApi } from '../../lib/api/corporate';
-import type { CorporateTicketMessage, SupportTicket } from '../../lib/api/types';
+import type { CorporateTicketActivity, CorporateTicketMessage, SupportTicket } from '../../lib/api/types';
 import { useSession } from '../../lib/auth/SessionContext';
 import { useInfiniteScroll } from '../../lib/hooks/useInfiniteScroll';
 import styles from './EmployeeSupport.module.css';
@@ -214,11 +216,10 @@ function employeeInitials(name: string): string {
 }
 
 export default function EmployeeSupportPage() {
-  const { tenantId, status: sessionStatus } = useSession();
+  const { tenantId, status: sessionStatus, claims } = useSession();
 
   const [complaints, setComplaints] = useState<NormalizedComplaint[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
 
   const [datePreset, setDatePreset] = useState<DatePreset>('30');
   const [customFrom, setCustomFrom] = useState('');
@@ -229,15 +230,27 @@ export default function EmployeeSupportPage() {
   const [visibleCount, setVisibleCount] = useState(LAZY_BATCH_SIZE);
   const [hasMoreServer, setHasMoreServer] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   const [trendPeriod, setTrendPeriod] = useState(6);
 
   const [selectedComplaint, setSelectedComplaint] = useState<NormalizedComplaint | null>(null);
   const [drawerLoading, setDrawerLoading] = useState(false);
   const [messages, setMessages] = useState<CorporateTicketMessage[]>([]);
+  const [activities, setActivities] = useState<CorporateTicketActivity[]>([]);
+  const [activityError, setActivityError] = useState<string | null>(null);
   const [replyText, setReplyText] = useState('');
+  const [replyAttachments, setReplyAttachments] = useState<File[]>([]);
+  const [replyIsInternal, setReplyIsInternal] = useState(false);
   const [sendingReply, setSendingReply] = useState(false);
   const [updatingStatus, setUpdatingStatus] = useState(false);
+  const [updatingPriority, setUpdatingPriority] = useState(false);
+  const [updatingAssignment, setUpdatingAssignment] = useState(false);
+  const [reopenReason, setReopenReason] = useState('');
+  const [reopening, setReopening] = useState(false);
   const [drawerFeedback, setDrawerFeedback] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
+  const isPlatformAdmin = claims?.role?.toUpperCase() === 'ADMIN';
+  const canSelfAssign = ['ADMIN', 'OPS'].includes(claims?.role?.toUpperCase() || '');
+  const currentUserId = claims?.id;
 
   const loadComplaints = useCallback(async () => {
     if (sessionStatus === 'loading') return;
@@ -247,7 +260,6 @@ export default function EmployeeSupportPage() {
       return;
     }
 
-    setRefreshing(true);
     setLoadError(null);
     try {
       const ticketsRes = await supportApi.list(tenantId, { limit: SERVER_BATCH_SIZE, offset: 0 });
@@ -263,14 +275,13 @@ export default function EmployeeSupportPage() {
       setComplaints([]);
       setHasMoreServer(false);
       setLoadError(error instanceof Error ? error.message : 'Unable to load employee complaints.');
-    } finally {
-      setRefreshing(false);
     }
   }, [sessionStatus, tenantId]);
 
-  const loadMoreServerComplaints = useCallback(async () => {
-    if (!tenantId || loadingMore || !hasMoreServer || complaints === null) return;
+  const loadMoreServerComplaints = useCallback(async (retry = false) => {
+    if (!tenantId || loadingMore || (!hasMoreServer && !retry) || complaints === null) return;
     setLoadingMore(true);
+    setLoadMoreError(null);
     try {
       const ticketsRes = await supportApi.list(tenantId, {
         limit: SERVER_BATCH_SIZE,
@@ -284,12 +295,22 @@ export default function EmployeeSupportPage() {
         return [...current, ...normalized.filter((item) => !seen.has(item.id))];
       });
       setHasMoreServer(rawList.length >= SERVER_BATCH_SIZE);
-    } catch {
+    } catch (error) {
       setHasMoreServer(false);
+      setLoadMoreError(error instanceof Error ? error.message : 'Unable to load additional tickets.');
     } finally {
       setLoadingMore(false);
     }
   }, [complaints, hasMoreServer, loadingMore, tenantId]);
+
+  const refreshActivity = async (ticketId: string) => {
+    try {
+      setActivities(await supportApi.activity(ticketId));
+      setActivityError(null);
+    } catch (error) {
+      setActivityError(error instanceof Error ? error.message : 'Unable to refresh ticket activity.');
+    }
+  };
 
   useEffect(() => {
     void loadComplaints();
@@ -299,18 +320,45 @@ export default function EmployeeSupportPage() {
     setSelectedComplaint(complaint);
     setDrawerFeedback(null);
     setReplyText('');
+    setReplyAttachments([]);
+    setReplyIsInternal(false);
+    setReopenReason('');
+    setMessages([]);
+    setActivities([]);
+    setActivityError(null);
     setDrawerLoading(true);
-    try {
-      const [detail, threadMessages] = await Promise.all([
-        supportApi.get(complaint.id).catch(() => complaint.raw),
-        supportApi.listMessages(complaint.id).catch(() => []),
-      ]);
-      const fresh = normalizeTicket(detail);
+    const [detailResult, messagesResult, activityResult] = await Promise.allSettled([
+      supportApi.get(complaint.id),
+      supportApi.listMessages(complaint.id),
+      supportApi.activity(complaint.id),
+    ]);
+
+    const errors: string[] = [];
+    if (detailResult.status === 'fulfilled') {
+      const fresh = normalizeTicket(detailResult.value);
       setSelectedComplaint(fresh);
-      setMessages(Array.isArray(threadMessages) ? threadMessages : []);
-    } finally {
-      setDrawerLoading(false);
+      setComplaints((current) =>
+        current ? current.map((item) => (item.id === fresh.id ? fresh : item)) : current,
+      );
+    } else {
+      errors.push(detailResult.reason instanceof Error ? detailResult.reason.message : 'Ticket details could not be loaded.');
     }
+    if (messagesResult.status === 'fulfilled') {
+      setMessages(Array.isArray(messagesResult.value) ? messagesResult.value : []);
+    } else {
+      errors.push(messagesResult.reason instanceof Error ? messagesResult.reason.message : 'Conversation could not be loaded.');
+    }
+    if (activityResult.status === 'fulfilled') {
+      setActivities(Array.isArray(activityResult.value) ? activityResult.value : []);
+    } else {
+      const message = activityResult.reason instanceof Error ? activityResult.reason.message : 'Activity history could not be loaded.';
+      setActivityError(message);
+      errors.push(message);
+    }
+    if (errors.length) {
+      setDrawerFeedback({ kind: 'error', message: errors.join(' ') });
+    }
+    setDrawerLoading(false);
   }, []);
 
   useEffect(() => {
@@ -329,10 +377,39 @@ export default function EmployeeSupportPage() {
     setSendingReply(true);
     setDrawerFeedback(null);
     try {
-      const sent = await supportApi.sendMessage(selectedComplaint.id, { message: replyText.trim() });
-      setMessages((prev) => [...prev, sent]);
+      if (replyIsInternal) {
+        const sent = await supportApi.sendMessage(selectedComplaint.id, {
+          message: replyText.trim(),
+          isInternal: true,
+        });
+        setMessages((prev) => [...prev, sent]);
+      } else if (replyAttachments.length) {
+        const updatedTicket = await supportApi.reply(selectedComplaint.id, replyText.trim(), replyAttachments);
+        const fresh = normalizeTicket(updatedTicket);
+        setSelectedComplaint(fresh);
+        setComplaints((prev) =>
+          prev ? prev.map((item) => (item.id === fresh.id ? fresh : item)) : prev,
+        );
+        setReplyText('');
+        setReplyAttachments([]);
+        try {
+          const refreshedMessages = await supportApi.listMessages(selectedComplaint.id);
+          setMessages(refreshedMessages);
+        } catch (error) {
+          setDrawerFeedback({
+            kind: 'error',
+            message: `Reply was sent, but the conversation could not refresh: ${error instanceof Error ? error.message : 'Unknown error.'}`,
+          });
+          return;
+        }
+      } else {
+        const sent = await supportApi.sendMessage(selectedComplaint.id, { message: replyText.trim() });
+        setMessages((prev) => [...prev, sent]);
+      }
       setReplyText('');
+      setReplyAttachments([]);
       setDrawerFeedback({ kind: 'success', message: 'Reply posted to ticket conversation.' });
+      void refreshActivity(selectedComplaint.id);
     } catch (error) {
       setDrawerFeedback({
         kind: 'error',
@@ -340,6 +417,83 @@ export default function EmployeeSupportPage() {
       });
     } finally {
       setSendingReply(false);
+    }
+  };
+
+  const handleReopen = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selectedComplaint || !reopenReason.trim()) return;
+
+    setReopening(true);
+    setDrawerFeedback(null);
+    try {
+      const updatedTicket = await supportApi.reopen(selectedComplaint.id, { reason: reopenReason.trim() });
+      const fresh = normalizeTicket({ ...selectedComplaint.raw, ...updatedTicket });
+      setSelectedComplaint(fresh);
+      setComplaints((prev) =>
+        prev ? prev.map((item) => (item.id === fresh.id ? fresh : item)) : prev,
+      );
+      setReopenReason('');
+      setDrawerFeedback({ kind: 'success', message: 'Ticket reopened and moved to In Progress.' });
+      void refreshActivity(selectedComplaint.id);
+      void loadComplaints();
+    } catch (error) {
+      setDrawerFeedback({
+        kind: 'error',
+        message: error instanceof Error ? error.message : 'Unable to reopen ticket.',
+      });
+    } finally {
+      setReopening(false);
+    }
+  };
+
+  const handlePriorityChange = async (priority: string) => {
+    if (!selectedComplaint) return;
+    setUpdatingPriority(true);
+    setDrawerFeedback(null);
+    try {
+      const updatedTicket = await supportApi.changePriority(selectedComplaint.id, priority);
+      const fresh = normalizeTicket(updatedTicket);
+      setSelectedComplaint(fresh);
+      setComplaints((prev) =>
+        prev ? prev.map((item) => (item.id === fresh.id ? fresh : item)) : prev,
+      );
+      setDrawerFeedback({ kind: 'success', message: `Priority changed to ${priority}.` });
+      void refreshActivity(selectedComplaint.id);
+    } catch (error) {
+      setDrawerFeedback({
+        kind: 'error',
+        message: error instanceof Error ? error.message : 'Unable to update ticket priority.',
+      });
+    } finally {
+      setUpdatingPriority(false);
+    }
+  };
+
+  const handleAssignToMe = async () => {
+    if (!selectedComplaint || !currentUserId) return;
+    setUpdatingAssignment(true);
+    setDrawerFeedback(null);
+    try {
+      const assignedToUserId = selectedComplaint.raw.assignedToUserId === currentUserId ? null : currentUserId;
+      const updatedTicket = await supportApi.assign(selectedComplaint.id, { assignedToUserId });
+      const fresh = normalizeTicket(updatedTicket);
+      setSelectedComplaint(fresh);
+      setComplaints((prev) =>
+        prev ? prev.map((item) => (item.id === fresh.id ? fresh : item)) : prev,
+      );
+      setDrawerFeedback({
+        kind: 'success',
+        message: assignedToUserId ? 'Ticket assigned to you.' : 'Ticket unassigned from you.',
+      });
+      void refreshActivity(selectedComplaint.id);
+    } catch (error) {
+      setDrawerFeedback({
+        kind: 'error',
+        message: error instanceof Error ? error.message : 'Unable to update ticket assignment.',
+      });
+    } finally {
+      setUpdatingAssignment(false);
     }
   };
 
@@ -372,6 +526,7 @@ export default function EmployeeSupportPage() {
         kind: 'success',
         message: `Complaint marked as ${nextStatus === 'RESOLVED' ? 'Resolved' : 'In Progress'}.`,
       });
+      void refreshActivity(selectedComplaint.id);
       void loadComplaints();
     } catch (error) {
       setDrawerFeedback({
@@ -509,15 +664,6 @@ export default function EmployeeSupportPage() {
               <ChevronDown size={15} aria-hidden="true" />
             </span>
           </label>
-          <button
-            type="button"
-            className={styles.statusActionBtn}
-            onClick={() => void loadComplaints()}
-            disabled={refreshing}
-            style={{ minHeight: 36 }}
-          >
-            <RefreshCw size={14} className={refreshing ? 'spin' : ''} /> Refresh
-          </button>
         </div>
       </header>
 
@@ -612,6 +758,7 @@ export default function EmployeeSupportPage() {
                 <th>Ticket #</th>
                 <th>Employee</th>
                 <th>Category</th>
+                <th>Priority</th>
                 <th>Subject &amp; Route</th>
                 <th>Raised On</th>
                 <th>Status</th>
@@ -620,10 +767,10 @@ export default function EmployeeSupportPage() {
             </thead>
             <tbody>
               {complaints === null ? (
-                <TableSkeletonRows columns={7} rows={6} />
+                <TableSkeletonRows columns={8} rows={6} />
               ) : loadError ? (
                 <tr>
-                  <td className={styles.stateCell} colSpan={7}>
+                  <td className={styles.stateCell} colSpan={8}>
                     <div className={styles.errorState} role="alert">
                       <strong>Could not load employee tickets</strong>
                       <span>{loadError}</span>
@@ -633,7 +780,7 @@ export default function EmployeeSupportPage() {
                 </tr>
               ) : allComplaints.length === 0 ? (
                 <tr>
-                  <td className={styles.stateCell} colSpan={7}>
+                  <td className={styles.stateCell} colSpan={8}>
                     <div className={styles.emptyState}>
                       <Headphones size={22} />
                       <strong>No employee complaints yet</strong>
@@ -643,7 +790,7 @@ export default function EmployeeSupportPage() {
                 </tr>
               ) : visibleComplaints.length === 0 ? (
                 <tr>
-                  <td className={styles.stateCell} colSpan={7}>
+                  <td className={styles.stateCell} colSpan={8}>
                     <div className={styles.emptyState}>
                       <Search size={22} />
                       <strong>No tickets match these filters</strong>
@@ -669,6 +816,7 @@ export default function EmployeeSupportPage() {
                     </div>
                   </td>
                   <td><span className={styles.categoryPill}>{complaint.categoryLabel}</span></td>
+                  <td><span className={styles.priorityPill}>{complaint.priority}</span></td>
                   <td>
                     <span className={styles.tripCell}>
                       <strong>{complaint.subject}</strong>
@@ -702,6 +850,12 @@ export default function EmployeeSupportPage() {
           loadingMore={loadingMore}
           label="Loading more tickets…"
         />
+        {loadMoreError && (
+          <div className={styles.loadMoreError} role="alert">
+            <span>Could not load additional tickets: {loadMoreError}</span>
+            <button type="button" onClick={() => void loadMoreServerComplaints(true)}>Try again</button>
+          </div>
+        )}
       </section>
 
       <section className={styles.analyticsGrid} aria-label="Complaint analytics">
@@ -797,7 +951,37 @@ export default function EmployeeSupportPage() {
                     <div className={styles.detailField}><span>Phone</span><strong>{selectedComplaint.employeePhone}</strong></div>
                   )}
                   <div className={styles.detailField}><span>Category</span><strong>{selectedComplaint.categoryLabel}</strong></div>
+                  <div className={styles.detailField}>
+                    <span>Priority</span>
+                    {isPlatformAdmin ? (
+                      <label className={styles.selectWrap}>
+                        <span className={styles.srOnly}>Change ticket priority</span>
+                        <select
+                          value={selectedComplaint.priority}
+                          disabled={updatingPriority}
+                          onChange={(event) => void handlePriorityChange(event.target.value)}
+                        >
+                          {['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].map((priority) => (
+                            <option key={priority} value={priority}>{priority}</option>
+                          ))}
+                        </select>
+                        <ChevronDown size={15} aria-hidden="true" />
+                      </label>
+                    ) : <strong>{selectedComplaint.priority}</strong>}
+                  </div>
                   <div className={styles.detailField}><span>Raised on</span><strong>{formatDate(selectedComplaint.raisedAt, { dateStyle: 'medium', timeStyle: 'short' })}</strong></div>
+                  {selectedComplaint.raw.slaMinutes > 0 && (
+                    <div className={styles.detailField}><span>Response SLA</span><strong>{selectedComplaint.raw.slaMinutes} minutes</strong></div>
+                  )}
+                  {selectedComplaint.raw.assignedTeam && (
+                    <div className={styles.detailField}><span>Assigned team</span><strong>{selectedComplaint.raw.assignedTeam}</strong></div>
+                  )}
+                  {selectedComplaint.raw.assignedToUser && (
+                    <div className={styles.detailField}>
+                      <span>Assigned to</span>
+                      <strong>{selectedComplaint.raw.assignedToUser.fullName}</strong>
+                    </div>
+                  )}
                 </div>
                 <div className={styles.detailField} style={{ marginBottom: 10 }}>
                   <span>Subject</span>
@@ -832,7 +1016,48 @@ export default function EmployeeSupportPage() {
                     )}
                   </div>
                 )}
+                {canSelfAssign && currentUserId && selectedComplaint.statusRaw !== 'CLOSED' && (
+                  <button
+                    type="button"
+                    className={styles.statusActionBtn}
+                    disabled={updatingAssignment}
+                    onClick={() => void handleAssignToMe()}
+                  >
+                    <UserCheck size={14} />
+                    {updatingAssignment
+                      ? 'Updating…'
+                      : selectedComplaint.raw.assignedToUserId === currentUserId
+                        ? 'Unassign from me'
+                        : 'Assign to me'}
+                  </button>
+                )}
               </section>
+
+              {['RESOLVED', 'CLOSED'].includes(selectedComplaint.statusRaw) && (
+                <section className={styles.detailSection}>
+                  <h3>Reopen ticket</h3>
+                  <p className={styles.noAttachments}>Reopening moves this ticket back to In Progress. Provide a reason for the audit history.</p>
+                  <form className={styles.replyForm} onSubmit={handleReopen}>
+                    <textarea
+                      aria-label="Reason for reopening ticket"
+                      placeholder="Why does this ticket need to be reopened?"
+                      value={reopenReason}
+                      onChange={(event) => setReopenReason(event.target.value)}
+                      maxLength={1000}
+                      disabled={reopening}
+                    />
+                    <div className={styles.replyFormFooter}>
+                      <button
+                        type="submit"
+                        className={styles.primaryActionBtn}
+                        disabled={reopening || !reopenReason.trim()}
+                      >
+                        <Activity size={14} /> {reopening ? 'Reopening…' : 'Reopen Ticket'}
+                      </button>
+                    </div>
+                  </form>
+                </section>
+              )}
 
               {selectedComplaint.routeId && (
                 <section className={styles.detailSection}>
@@ -841,7 +1066,13 @@ export default function EmployeeSupportPage() {
                     <span className={styles.tripIcon}><CarFront size={17} /></span>
                     <span>
                       <strong>Route {selectedComplaint.routeId}</strong>
-                      <small>Linked to this employee support ticket</small>
+                      <small>
+                        {[
+                          selectedComplaint.raw.driver?.name,
+                          selectedComplaint.raw.driver?.vehiclePlate,
+                          selectedComplaint.raw.route?.vehicle?.registrationNumber,
+                        ].filter(Boolean).join(' · ') || 'Linked to this employee support ticket'}
+                      </small>
                     </span>
                   </div>
                 </section>
@@ -876,7 +1107,7 @@ export default function EmployeeSupportPage() {
                             <time>{formatDate(new Date(msg.createdAt), { dateStyle: 'medium', timeStyle: 'short' })}</time>
                           </div>
                           <p>{msg.message}</p>
-                          <small>{msg.senderRole}</small>
+                          <small>{msg.isInternal ? 'Internal note' : msg.senderRole}</small>
                         </div>
                       </li>
                     ))}
@@ -884,13 +1115,59 @@ export default function EmployeeSupportPage() {
                 )}
 
                 <form className={styles.replyForm} onSubmit={handleSendReply}>
+                  {canSelfAssign && (
+                    <label className={styles.internalNoteToggle}>
+                      <input
+                        type="checkbox"
+                        checked={replyIsInternal}
+                        onChange={(event) => {
+                          setReplyIsInternal(event.target.checked);
+                          if (event.target.checked) setReplyAttachments([]);
+                        }}
+                        disabled={sendingReply}
+                      />
+                      Add an internal note (visible to platform support only)
+                    </label>
+                  )}
                   <textarea
                     aria-label="Reply to ticket"
-                    placeholder="Write a reply or operational update..."
+                    placeholder={replyIsInternal ? 'Write an internal note...' : 'Write a reply or operational update...'}
                     value={replyText}
                     onChange={(event) => setReplyText(event.target.value)}
                     disabled={sendingReply}
                   />
+                  {!replyIsInternal && (
+                    <div className={styles.attachmentPicker}>
+                      <label>
+                        <Paperclip size={14} /> Add images
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          multiple
+                          disabled={sendingReply}
+                          onChange={(event) => {
+                            const files = Array.from(event.target.files || []);
+                            event.target.value = '';
+                            const invalid = files.find((file) => !['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 5 * 1024 * 1024);
+                            if (files.length > 5 || invalid) {
+                              setDrawerFeedback({
+                                kind: 'error',
+                                message: files.length > 5
+                                  ? 'You can attach up to 5 images.'
+                                  : 'Attachments must be JPG, PNG, or WEBP images no larger than 5 MB each.',
+                              });
+                              return;
+                            }
+                            setDrawerFeedback(null);
+                            setReplyAttachments(files);
+                          }}
+                        />
+                      </label>
+                      {replyAttachments.length > 0 && (
+                        <span>{replyAttachments.map((file) => file.name).join(', ')}</span>
+                      )}
+                    </div>
+                  )}
                   <div className={styles.replyFormFooter}>
                     <button
                       type="submit"
@@ -901,6 +1178,33 @@ export default function EmployeeSupportPage() {
                     </button>
                   </div>
                 </form>
+              </section>
+
+              <section className={styles.detailSection}>
+                <h3>Ticket activity</h3>
+                {drawerLoading ? (
+                  <ContentLoadingSkeleton kind="list" count={2} label="Loading ticket activity…" />
+                ) : activityError ? (
+                  <p className={styles.inlineError} role="alert">{activityError}</p>
+                ) : activities.length === 0 ? (
+                  <p className={styles.noAttachments}>No audit events have been recorded.</p>
+                ) : (
+                  <ol className={styles.timeline}>
+                    {activities.map((activity) => (
+                      <li key={activity.id}>
+                        <span className={styles.timelineDot} />
+                        <div>
+                          <div className={styles.timelineHeading}>
+                            <strong>{activity.actorName || activity.actorRole || 'System'}</strong>
+                            <time>{formatDate(new Date(activity.timestamp), { dateStyle: 'medium', timeStyle: 'short' })}</time>
+                          </div>
+                          <p>{activity.action.replace(/_/g, ' ').toLowerCase()}</p>
+                          {activity.actorRole && <small>{activity.actorRole}</small>}
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                )}
               </section>
 
               <section className={styles.detailSection}>

@@ -257,6 +257,18 @@
   white-space: nowrap;
 }
 
+.priorityPill {
+  display: inline-flex;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: var(--text-secondary);
+  background: var(--bg-surface-muted);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .dateCell { min-width: 112px; color: var(--text-primary) !important; white-space: nowrap; }
 .dateCell small { display: block; margin-top: 3px; }
 .statusBadge { display: inline-flex; border: 1px solid transparent; border-radius: 999px; padding: 4px 8px; font-size: 10px; font-weight: 700; white-space: nowrap; }
@@ -303,6 +315,8 @@
   color: var(--text-muted);
   font-size: 11px;
 }
+.loadMoreError { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; padding: 8px 16px 14px; color: var(--color-danger-text); font-size: 11px; }
+.loadMoreError button { border: 0; color: var(--brand-primary); background: transparent; font: inherit; font-weight: 700; cursor: pointer; }
 
 .analyticsGrid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; }
 .chartScroll { width: 100%; overflow-x: auto; padding: 0 12px 12px; }
@@ -352,6 +366,7 @@
 .attachmentList li a { color: var(--brand-primary); text-decoration: none; font-weight: 600; }
 .attachmentList li a:hover { text-decoration: underline; }
 .noAttachments { margin: 0; color: var(--text-muted); font-size: 11px; }
+.inlineError { margin: 0; color: var(--color-danger-text); font-size: 11px; }
 .statusActions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .statusActionBtn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border-subtle); border-radius: 7px; padding: 7px 12px; background: var(--bg-surface); color: var(--text-primary); font: inherit; font-size: 11px; font-weight: 650; cursor: pointer; transition: border-color .15s ease, background-color .15s ease; }
 .statusActionBtn:hover:not(:disabled) { border-color: var(--brand-primary); background: var(--brand-primary-subtle); color: var(--brand-primary); }
@@ -361,6 +376,11 @@
 .replyForm { display: grid; gap: 10px; margin-top: 12px; }
 .replyForm textarea { width: 100%; min-height: 76px; box-sizing: border-box; resize: vertical; border: 1px solid var(--border-subtle); border-radius: 7px; padding: 9px 11px; color: var(--text-primary); background: var(--bg-surface); font: inherit; font-size: 12px; line-height: 1.45; }
 .replyForm textarea:focus { outline: none; border-color: var(--brand-primary); box-shadow: 0 0 0 3px var(--focus-ring); }
+.internalNoteToggle { display: flex; align-items: center; gap: 7px; color: var(--text-secondary); font-size: 11px; }
+.internalNoteToggle input { accent-color: var(--brand-primary); }
+.attachmentPicker { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--text-muted); font-size: 10px; }
+.attachmentPicker label { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border-subtle); border-radius: 6px; padding: 6px 9px; color: var(--brand-primary); font-size: 11px; font-weight: 650; cursor: pointer; }
+.attachmentPicker input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); clip-path: inset(50%); }
 .replyFormFooter { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .primaryActionBtn { display: inline-flex; align-items: center; gap: 6px; border: 0; border-radius: 7px; padding: 8px 14px; background: var(--brand-action); color: #fff; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; }
 .primaryActionBtn:hover:not(:disabled) { background: var(--brand-action-hover); }

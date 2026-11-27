@@ -620,6 +620,22 @@ export interface SupportTicket {
     email?: string;
     role?: string;
   } | null;
+  driver?: {
+    id: string;
+    name: string;
+    phone?: string | null;
+    email?: string | null;
+    vehiclePlate?: string | null;
+  } | null;
+  route?: {
+    id: string;
+    vehicle?: {
+      id: string;
+      registrationNumber?: string | null;
+      make?: string | null;
+      model?: string | null;
+    } | null;
+  } | null;
   comments?: Array<{
     id: string;
     message: string;

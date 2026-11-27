@@ -555,7 +555,7 @@ export const supportApi = {
   },
   listMessages: (ticketId: string) =>
     apiRequest<CorporateTicketMessage[]>(`/corporate/support/tickets/${ticketId}/messages`),
-  sendMessage: (ticketId: string, body: { message: string }) =>
+  sendMessage: (ticketId: string, body: { message: string; isInternal?: boolean }) =>
     apiRequest<CorporateTicketMessage>(`/corporate/support/tickets/${ticketId}/messages`, {
       method: 'POST',
       body,
@@ -564,6 +564,16 @@ export const supportApi = {
     apiRequest<SupportTicket>(`/corporate/support/tickets/${ticketId}/reopen`, {
       method: 'POST',
       body: body || {},
+    }),
+  assign: (ticketId: string, body: { assignedToUserId: string | null; notes?: string }) =>
+    apiRequest<SupportTicket>(`/corporate/support/tickets/${ticketId}/assign`, {
+      method: 'PATCH',
+      body,
+    }),
+  changePriority: (ticketId: string, priority: string) =>
+    apiRequest<SupportTicket>(`/corporate/support/tickets/${ticketId}/priority`, {
+      method: 'PATCH',
+      body: { priority },
     }),
   updateStatus: (ticketId: string, status: string, notes?: string) =>
     apiRequest<SupportTicket>(`/corporate/support/tickets/${ticketId}/status`, {

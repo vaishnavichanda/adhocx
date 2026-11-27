@@ -312,14 +312,6 @@ export default function CompanyOverviewPage() {
             <CalendarDays size={14} style={{ verticalAlign: 'middle', marginRight: '6px' }} />
             Apply
           </button>
-          <button
-            type="button"
-            disabled={loading}
-            onClick={() => setRefreshKey((key) => key + 1)}
-            style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '9px 12px', background: 'var(--bg-surface, #fff)', color: 'var(--text-primary)', fontWeight: 600, cursor: loading ? 'wait' : 'pointer' }}
-          >
-            Refresh
-          </button>
         </form>
       </div>
 
